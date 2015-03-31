@@ -1,0 +1,12 @@
+
+# Operating systems
+## Mac OS X
+.DS_Store
+## Windows
+Thumbs.db
+
+# Ignore things in Data directories, but not the readme
+/Data-Output/*
+!/Data-Output/README.md
+/Data-Source/*
+!/Data-Source/README.md
