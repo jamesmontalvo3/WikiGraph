@@ -4,43 +4,48 @@
 /*
 
 for raw edges:
+SET @start = 20150101000000;
+SET @end   = 20150331000000;
 
 SELECT DISTINCT
-    p_from.page_namespace AS from_namespace,
-    p_from.page_title AS from_title,
-    IF( p_to.page_is_redirect = 0, p_to.page_namespace, (SELECT rd_namespace FROM redirect WHERE rd_from = p_to.page_id) ) AS to_namespace,
-    IF( p_to.page_is_redirect = 0, p_to.page_title, (SELECT rd_title FROM redirect WHERE rd_from = p_to.page_id) ) AS to_title
-FROM pagelinks AS pl
-LEFT JOIN page AS p_from ON (p_from.page_id = pl.pl_from)
-LEFT JOIN page AS p_to ON (p_to.page_namespace = pl.pl_namespace AND p_to.page_title = pl.pl_title)
+    wiretap.user_name,
+    IF( page.page_is_redirect = 0, page.page_id, (
+            SELECT redpage.page_id FROM redirect 
+            LEFT JOIN page AS redpage ON redirect.rd_namespace = redpage.page_namespace AND redirect.rd_title = redpage.page_title
+            WHERE rd_from = page.page_id
+     ) ) AS page_id,
+    IF( page.page_is_redirect = 0, page.page_title, (SELECT rd_title FROM redirect WHERE rd_from = page.page_id) ) AS page_title
+FROM wiretap
+RIGHT JOIN page ON
+    wiretap.page_id = page.page_id
+RIGHT JOIN user ON
+    user.user_name = wiretap.user_name
+LEFT JOIN user_groups ON
+    user_groups.ug_user = user.user_id
 WHERE
-    p_from.page_namespace = 0 
-    AND p_to.page_namespace = 0
-    AND p_from.page_is_redirect = 0
+    wiretap.hit_timestamp > @start
+    AND wiretap.hit_timestamp < @end
+    AND wiretap.page_id IS NOT NULL
+    AND wiretap.page_id != 0
+    AND page.page_id != 1
+    AND user_groups.ug_group = "CX3"
+    AND page.page_namespace = 0;
 
 
-
-
-for raw nodes:
+NODE INFO
 
 SELECT
     page_namespace,
     page_title,
+    page_id,
     (
         SELECT
             GROUP_CONCAT( cl_to )
         FROM categorylinks
-        WHERE cl_from = page_id     
+        WHERE
+            cl_from = page_id 
+            AND cl_to IN ("Meeting_Minutes","Lesson_Learned","OCAD","Tool","NCW","EVA","Inhibit","Crew","ORU","Person","EMU_Component","Generic_Hardware","EVA_Development_Process_Work_Instruction")   
     ) AS categories 
-FROM page
-WHERE
-    page_namespace = 0
-    AND page_is_redirect = 0
-
-
-SELECT
-    page_namespace,
-    page_title
 FROM page
 WHERE
     page_namespace = 0
@@ -52,17 +57,37 @@ function createNodeName ( $ns, $title ) {
     return trim( $ns ) . ':' . trim( $title );
 }
 
+function addNode ( $nodeName, $categories ) {
+    global $nodeKey, $gexf;
+
+    if ( ! array_key_exists( $nodeName, $nodeKey ) ) {
+        $node = new GexfNode( $nodeName );
+        $nodeKey[ $nodeName ] = $node->getNodeId();
+        
+        if ( count( $categories ) == 0 ) {
+            $categories = array( "uncategorized" );
+        }
+        foreach( $categories as $cat ) {
+            $node->addNodeAttribute( "category", $cat );
+        }
+
+        $gexf->addNode( $node );
+    }
+
+    return $nodeKey[ $nodeName ];
+
+}
 
 require_once __DIR__ . '/GEXF-library/Gexf.class.php';
 
 // create new graph
 $gexf = new Gexf();
 $gexf->setTitle( "MediaWiki Graph" );
-$gexf->setEdgeType( GEXF_EDGE_DIRECTED );
+$gexf->setEdgeType( GEXF_EDGE_UNDIRECTED );
 $gexf->setCreator( "My Wiki" );
 $frequency = 1;
 
-
+/*
 $rawNodes = file_get_contents( __DIR__ . '/Data-Source/rawNodes.txt' );
 $rawNodes = explode( "\n", $rawNodes );
 
@@ -128,41 +153,63 @@ foreach( $rawNodes as $rawNodeLine ) {
 
 }
 unset( $rawNodes );
+*/
+
+$rawNodes = file_get_contents( __DIR__ . '/Data-Source/rawNodes2.txt' );
+$rawNodes = explode( "\n", $rawNodes );
+
+$nodeCats = array();
+foreach( $rawNodes as $nodeData ) {
+
+    $nodeData = explode( "\t", $nodeData );
+    $nodeData = array_map( function( $e ) { return trim( $e ); }, $nodeData );
+
+    //list( $ns, $title, $pageId, $cats ) 
+
+    $nodeCats[ $nodeData[2] ] = explode( ',', $nodeData[3] );
+}
+
+// print_r( $nodeCats );die();
 
 
-$rawEdges = file_get_contents( __DIR__ . '/Data-Source/rawEdges.txt' );
+$rawEdges = file_get_contents( __DIR__ . '/Data-Source/UserPageHits2.txt' );
 $rawEdges = explode( "\n", $rawEdges );
 
-$edges = array(); $count = 0;
+$nodeKey = array();
+
+$edges = array();
+$count = 0;
 foreach( $rawEdges as $rawEdgeLine ) {
 
-    $edgeData = explode( "\t", $rawEdgeLine );
+    //$edgeData = explode( "\t", $rawEdgeLine );
 
+    list( $username, $pageId, $pageName ) = array_map( function( $e ) { return trim($e); }, explode( "\t", $rawEdgeLine ) );
 
-    $fromNodeName = createNodeName( $edgeData[0], $edgeData[1] );
-    $toNodeName = createNodeName( $edgeData[2], $edgeData[3] );
+    // $fromNodeName = trim( $edgeData[0] );
+    // $toNodeName = trim( $edgeData[2] );
+    $fromNodeName = trim( $username );
+    $toNodeName = trim( $pageName );
 
-    // echo "\n\n" . $fromEdgeName . "\n" . $toEdgeName; die();
+    // user node
+    $fromNodeId = addNode( $fromNodeName, array( "User" ) );
+    
+    if ( array_key_exists( $pageId, $nodeCats ) ) {
+        $pageCats = $nodeCats[ $pageId ];
+    }
+    else {
+        $pageCats = array();
+    }
 
-    if ( ! array_key_exists( $toNodeName, $nodeKey ) 
-         || ! array_key_exists( $fromNodeName , $nodeKey ) 
-        ) {
-        continue;
-    } 
+    // page node
+    $toNodeId   = addNode( $toNodeName, $pageCats );
+
+    $edge_id = $gexf->addEdge(
+        $gexf->nodeObjects[ $fromNodeId ],
+        $gexf->nodeObjects[ $toNodeId ],
+        $frequency
+    );
     $count++;
 
-    $fromNodeId = $nodeKey[ $fromNodeName ];
-    $toNodeId   = $nodeKey[ $toNodeName ];
-
-    if ( array_key_exists( $fromNodeId, $gexf->nodeObjects ) && array_key_exists( $toNodeId, $gexf->nodeObjects ) ) {
-
-        $edge_id = $gexf->addEdge(
-            $gexf->nodeObjects[ $fromNodeId ],
-            $gexf->nodeObjects[ $toNodeId ],
-            $frequency
-        );
-
-    }
 }
 unset( $rawEdges );
 echo "\n$count edges created\n";
